@@ -1,0 +1,150 @@
+---
+title: "S2 - Selecting Pink Variables"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(here)
+
+here::i_am('scripts/s2_selecting_pink_variables.Rmd')
+
+data_path <- here("data/general/nuMoM2b_Merged_Dataset.csv")
+out_dir   <- here("outputs/s2")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r define-pink-variables}
+# ---- Define all 131 pink variables ----
+
+pink_vars <- c(
+  # A04
+  "A04A03", "A04A03_1", "A04A03c_SP", "A04A03c_SP_1",
+  "A04A04", "A04A04_1", "A04A05", "A04A05_1",
+
+  # A05
+  "A05A03h",
+
+  # CMA
+  "CMAA01m1a5", "CMAA01m1a6", "CMAA01m1a7",
+  "CMAA02m1a5", "CMAA02m1a6", "CMAA02m1a7",
+  "CMAD01a", "CMAD01f", "CMAD01g", "CMAD01h", "CMAD01h_SP", "CMAD01i", "CMAD01i_SP",
+  "CMAE09", "CMAE09a1", "CMAE09a2", "CMAE09a3",
+  "CMAE10", "CMAE10a1", "CMAE10a2", "CMAE10a3",
+  "CMAE11", "CMAE11e_SP",
+  "CMAE12", "CMAE12a1", "CMAE12a2", "CMAE12a3", "CMAE12c",
+  "CMAE13", "CMAE13a1", "CMAE13a2", "CMAE13a3",
+  "CMAE13c1", "CMAE13c2", "CMAE13c3", "CMAE13c4", "CMAE13c4_SP",
+  "CMAE15", "CMAE15a_sp", "CMAE15a1a", "CMAE15a1b", "CMAE15a1c",
+  "CMAE15b_sp", "CMAE15b1a", "CMAE15b1b", "CMAE15b1c",
+  "CMAE15c_sp", "CMAE15c1a", "CMAE15c1b", "CMAE15c1c",
+  "CMAE15d_sp", "CMAE15d1a", "CMAE15d1b", "CMAE15d1c",
+  "CMAI01A_INT",
+  "CMAJ01", "CMAJ01d1", "CMAJ01d1_SP", "CMAJ01d2", "CMAJ01d3",
+  "CMAJ01d4", "CMAJ01d5", "CMAJ01d5_SP",
+
+  # CMB
+  "CMBA01l1a5", "CMBA01l1a5_1", "CMBA01l1a5_2", "CMBA01l1a5_3", "CMBA01l1a5_4",
+  "CMBA01l1a6", "CMBA01l1a6_1", "CMBA01l1a6_2", "CMBA01l1a6_3", "CMBA01l1a6_4",
+  "CMBA01l1a7", "CMBA01l1a7_1", "CMBA01l1a7_2", "CMBA01l1a7_3", "CMBA01l1a7_4",
+  "CMBJ03", "CMBJ03_1", "CMBJ03_2", "CMBJ03_3", "CMBJ03_4",
+  "CMBJ03a", "CMBJ03a_1", "CMBJ03a_2", "CMBJ03a_3", "CMBJ03a_4",
+  "CMBJ03b", "CMBJ03b_1", "CMBJ03b_2", "CMBJ03b_3", "CMBJ03b_4",
+  "CMBJ03c", "CMBJ03c_1", "CMBJ03c_2", "CMBJ03c_3", "CMBJ03c_4",
+  "CMBJ03e", "CMBJ03e_1", "CMBJ03e_2", "CMBJ03e_3", "CMBJ03e_4",
+  "CMBJ04", "CMBJ04_1", "CMBJ04_2", "CMBJ04_3", "CMBJ04_4",
+
+  # CMD
+  "CMDA07b1a", "CMDA07b2a", "CMDA07b3a", "CMDA07b6a",
+  "CMDA08b1a", "CMDA08b2a", "CMDA08b3a", "CMDA08b6a", "CMDA08c",
+
+  # CME
+  "CMEA02", "CMEA02a", "CMEA02c", "CMEA02e", "CMEA03"
+)
+
+message("Total pink variables defined: ", length(pink_vars))
+```
+
+```{r load-data}
+# ---- Load full dataset (all columns) ----
+all_cols <- names(read_csv(data_path, n_max = 0, show_col_types = FALSE))
+
+id_col <- "PublicID"
+if (!(id_col %in% all_cols)) stop("PublicID column not found in dataset.")
+
+# Check CMAE14 exists
+if (!("CMAE14" %in% all_cols)) stop("CMAE14 column not found in dataset.")
+
+# Check which pink vars are present
+present <- intersect(pink_vars, all_cols)
+missing <- setdiff(pink_vars, all_cols)
+
+message("Pink variables found in dataset:     ", length(present))
+message("Pink variables NOT found in dataset: ", length(missing))
+
+if (length(missing) > 0) {
+  message("Missing variables: ", paste(missing, collapse = ", "))
+  write_csv(
+    tibble(variable = missing),
+    file.path(out_dir, "pink_vars_missing_in_dataset.csv")
+  )
+}
+
+# ---- Read ALL columns (needed for Dataset 1) ----
+full_data <- read_csv(data_path, show_col_types = FALSE)
+
+message("Total rows loaded: ", nrow(full_data))
+message("Total columns in full dataset: ", ncol(full_data))
+```
+
+```{r split-by-cmae14}
+# ---- Identify rows where CMAE14 == 1 ----
+n_cmae14_1 <- sum(full_data$CMAE14 == 1, na.rm = TRUE)
+n_total     <- nrow(full_data)
+
+message("--------------------------------------------------")
+message("NOTE: Total rows in dataset:               ", n_total)
+message("NOTE: Rows with CMAE14 = 1:                ", n_cmae14_1)
+message("NOTE: Rows to be removed from pink dataset: ", n_cmae14_1)
+message("NOTE: Rows remaining after removal:        ", n_total - n_cmae14_1)
+message("--------------------------------------------------")
+
+# ---- Dataset 1: ALL columns, rows where CMAE14 == 1 ----
+cmae14_flagged <- full_data %>%
+  filter(CMAE14 == 1)
+
+message("Dataset 1 (all columns, CMAE14 = 1 rows): ",
+        nrow(cmae14_flagged), " rows x ", ncol(cmae14_flagged), " cols")
+
+# ---- Dataset 2: pink variables only, excluding rows where CMAE14 == 1 ----
+pink_clean <- full_data %>%
+  filter(is.na(CMAE14) | CMAE14 != 1) %>%
+  select(all_of(c(id_col, present)))
+
+message("Dataset 2 (pink vars, CMAE14=1 rows removed): ",
+        nrow(pink_clean), " rows x ", ncol(pink_clean), " cols")
+```
+
+```{r save-outputs}
+# ---- Save Dataset 1: CMAE14 = 1 flagged rows ----
+write_csv(cmae14_flagged, file.path(out_dir, "v1_1_cmae14_flagged_rows.csv"))
+saveRDS(cmae14_flagged,   file.path(out_dir, "v1_1_cmae14_flagged_rows.rds"))
+
+message("Saved: outputs/s2/v1_1_cmae14_flagged_rows.csv  (",
+        nrow(cmae14_flagged), " rows)")
+
+# ---- Save Dataset 2: clean pink variables ----
+write_csv(pink_clean, file.path(out_dir, "v1_2_pink_variables_clean.csv"))
+saveRDS(pink_clean,   file.path(out_dir, "v1_2_pink_variables_clean.rds"))
+
+message("Saved: outputs/s2/v1_2_pink_variables_clean.csv  (",
+        nrow(pink_clean), " rows)")
+
+# ---- Quick peek ----
+message("--- Preview: CMAE14 flagged rows ---")
+head(cmae14_flagged %>% select(PublicID, CMAE14))
+
+message("--- Preview: clean pink dataset ---")
+head(pink_clean[, 1:min(6, ncol(pink_clean))])
+```

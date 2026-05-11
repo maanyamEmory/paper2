@@ -1,0 +1,832 @@
+---
+title: "S1 - Selecting Blue Variables (63 variables)"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(readxl)
+library(here)
+library(knitr)
+
+here::i_am('scripts/s1_selecting_blue_variables_63.Rmd')
+
+data_path     <- here("data/general/nuMoM2b_Merged_Dataset.csv")
+codebook_path <- here("data/general/HIGHLIGHTED_nuMoM2b_Merged_Dataset_Codebook_9.14.25.xlsx")
+out_dir       <- here("outputs/s1")
+
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r define-blue-cols}
+# ============================================================
+# Step 1: Define the 63 blue variables
+#         (the 7 previously added pink variables are removed)
+# ============================================================
+
+blue_cols <- c(
+  "PublicID",
+
+  # Demographics / insurance
+  "Education",
+  "Ins_Govt", "Ins_Mil", "Ins_Comm", "Ins_Pers", "Ins_Othr",
+  "V1AF04", "Race", "V1AF10", "V1AF09", "AgeCat_V1",
+
+  # Chronic & medical history
+  "ChronHTN",
+  "VXXB01ae_FA", "VXXB01ae1_FA",
+  "VXXB01ab_FA",
+  "V1AD14", "V3FF01a",
+  "VXXB01al_FA",
+  "VXXB01ah_FA", "VXXB01ai_FA", "VXXB01aj_FA", "VXXB01ak_FA",
+  "VXXB01au_FA", "VXXB01av_FA", "VXXB01aw_FA",
+  "VXXB01ac_FA",
+  "VXXB01af_FA",
+  "V1AD12a", "V1AD12b", "V1AD12c", "V1AD12d",
+  "VXXB01ap_FA", "VXXB01ag_FA",
+  "VXXB01as_FA", "VXXB01at_FA",
+  "VXXB01ar_FA",
+  "GravCat",
+
+  # Pregnancy & labs
+  "CMAC03_wks",
+  "V1BA02a",
+  "V3BA02b1",
+  "V3BA02a1",
+  "CMAH01b4", "CMAH01b6", "CMAH01b1",
+  "CMDA04a", "CMDA04b",
+  "CMBG01",
+  "CMAB01a1",
+
+  # Additional clinical item
+  "A09A03b3",
+
+  # Visit variables
+  "V3AF02", "V3AF05",
+  "V1AG02", "V1AG03",
+
+  # Outcome / follow-up
+  "V3AF07a", "V3AF07b", "V3AF07c", "V3AF07d", "V3AF07e",
+  "V3AF07f", "V3AF07g", "V3AF07h", "V3AF07i"
+)
+
+# PublicID is the ID column, not a substantive variable
+blue_vars_only <- setdiff(blue_cols, "PublicID")
+
+message("Total blue variables (excl. PublicID): ", length(blue_vars_only))
+```
+
+```{r check-and-load}
+# ============================================================
+# Step 2: Check existence and load data
+# ============================================================
+
+all_names <- names(read_csv(data_path, n_max = 0, show_col_types = FALSE))
+missing_cols <- setdiff(blue_cols, all_names)
+present_cols <- intersect(blue_cols, all_names)
+
+if (length(missing_cols) > 0) {
+  message("WARNING: columns not found in dataset (skipped):")
+  message(paste(missing_cols, collapse = ", "))
+}
+if (length(present_cols) == 0) stop("None of the requested columns exist in the dataset.")
+
+blue_df <- read_csv(
+  data_path,
+  col_select = all_of(present_cols),
+  show_col_types = FALSE
+)
+
+message("Loaded: ", nrow(blue_df), " rows x ", ncol(blue_df), " cols")
+```
+
+```{r codebook-lookup}
+# ============================================================
+# Step 3: Look up Variable_Type, Variable_Unit_if_Numeric,
+#         and Variable_Code_List_if_Coded from codebook
+#         for each of the 63 blue variables
+# ============================================================
+
+cb <- read_excel(codebook_path, sheet = "nuMoM2b_Variables")
+
+# Identify column names using exact or substring matching
+cb_var_col  <- "Variable_Name"
+cb_type_col <- "Variable Type"
+cb_unit_col <- names(cb)[grepl("Variable Unit", names(cb), fixed = TRUE)][1]
+cb_code_col <- "Variable_Code_List_if_Coded"
+
+message("Codebook columns identified:")
+message("  var  : ", cb_var_col)
+message("  type : ", cb_type_col)
+message("  unit : ", cb_unit_col)
+message("  code : ", cb_code_col)
+
+cb_small <- cb %>%
+  transmute(
+    variable      = as.character(.data[[cb_var_col]]),
+    Variable_Type = as.character(.data[[cb_type_col]]),
+    Variable_Unit = as.character(.data[[cb_unit_col]]),
+    Variable_Code = as.character(.data[[cb_code_col]])
+  )
+
+# Join codebook info onto the 63 blue variables
+lookup_df <- tibble(variable = blue_vars_only) %>%
+  left_join(cb_small, by = "variable") %>%
+  mutate(
+    Variable_Type = if_else(is.na(Variable_Type) | trimws(Variable_Type) == "",
+                            "Not found in codebook", trimws(Variable_Type)),
+    Variable_Unit = if_else(is.na(Variable_Unit) | trimws(Variable_Unit) %in% c("", "NA"),
+                            NA_character_, trimws(Variable_Unit)),
+    Variable_Code = if_else(is.na(Variable_Code) | trimws(Variable_Code) %in% c("", "NA"),
+                            "NA_or_blank", trimws(Variable_Code))
+  )
+
+message("Codebook lookup complete for ", nrow(lookup_df), " variables")
+```
+
+```{r type-code-summary}
+# ============================================================
+# Step 4: Summary tables
+#   4a: Count of variables by Variable_Type
+#   4b: Count of variables by Variable_Code_List_if_Coded
+#   4c: Cross-tabulation of Variable_Type x Variable_Code
+# ============================================================
+
+# 4a: by Variable_Type
+summary_type <- lookup_df %>%
+  count(Variable_Type, name = "n_variables") %>%
+  arrange(desc(n_variables))
+
+message("--- Variable_Type summary ---")
+kable(summary_type, caption = "Number of blue variables by Variable_Type")
+```
+
+```{r code-summary}
+# 4b: by Variable_Code_List_if_Coded
+summary_code <- lookup_df %>%
+  count(Variable_Code, name = "n_variables") %>%
+  arrange(desc(n_variables))
+
+message("--- Variable_Code_List_if_Coded summary ---")
+kable(summary_code, caption = "Number of blue variables by Variable_Code_List_if_Coded")
+```
+
+```{r type-code-crosstab}
+# 4c: Cross-tabulation
+crosstab <- lookup_df %>%
+  count(Variable_Type, Variable_Code, name = "n_variables") %>%
+  arrange(Variable_Type, desc(n_variables))
+
+kable(crosstab, caption = "Cross-tabulation: Variable_Type x Variable_Code_List_if_Coded")
+```
+
+```{r missing-rate}
+# ============================================================
+# Step 5: Missing rate for each of the 63 blue variables
+# ============================================================
+
+n_rows <- nrow(blue_df)
+
+missing_rate_df <- tibble(variable = blue_vars_only) %>%
+  mutate(
+    n_missing    = sapply(variable, function(v) {
+      if (v %in% names(blue_df)) sum(is.na(blue_df[[v]])) else NA_integer_
+    }),
+    n_total      = n_rows,
+    missing_rate = round(n_missing / n_total * 100, 2)
+  ) %>%
+  left_join(lookup_df %>% select(variable, Variable_Type, Variable_Code),
+            by = "variable") %>%
+  arrange(desc(missing_rate))
+
+kable(
+  missing_rate_df,
+  col.names = c("Variable", "N Missing", "N Total", "Missing Rate (%)",
+                "Variable Type", "Variable Code"),
+  caption   = "Missing rate for each of the 63 blue variables"
+)
+```
+
+```{r update-weight}
+# ============================================================
+# Step 5b: Combine CMAB01a1 (kg) and CMAB01a2 (lbs) into
+#          updated_CMAB01a1 (kg), then compute BMI
+# ============================================================
+
+# --- Load the two weight columns from the full dataset ---
+weight_raw <- read_csv(
+  data_path,
+  col_select = c("PublicID", "CMAB01a1", "CMAB01a2"),
+  show_col_types = FALSE
+)
+
+# --- Step 1: Convert lbs -> kg (1 lbs = 0.453592 kg) and merge ---
+# Priority: use CMAB01a1 (kg) if available; otherwise convert CMAB01a2 (lbs)
+weight_raw <- weight_raw %>%
+  mutate(
+    CMAB01a1 = as.numeric(CMAB01a1),
+    CMAB01a2 = as.numeric(CMAB01a2),
+    updated_CMAB01a1 = case_when(
+      !is.na(CMAB01a1)               ~ CMAB01a1,                        # already in kg
+      !is.na(CMAB01a2)               ~ round(CMAB01a2 * 0.453592, 2),  # convert lbs -> kg
+      TRUE                           ~ NA_real_
+    )
+  )
+
+# --- Check missing rate of updated_CMAB01a1 ---
+n_total_w   <- nrow(weight_raw)
+n_miss_orig <- sum(is.na(weight_raw$CMAB01a1))
+n_miss_upd  <- sum(is.na(weight_raw$updated_CMAB01a1))
+
+message("CMAB01a1 original  - N missing: ", n_miss_orig,
+        " / ", n_total_w,
+        " (", round(n_miss_orig / n_total_w * 100, 2), "%)")
+message("updated_CMAB01a1   - N missing: ", n_miss_upd,
+        " / ", n_total_w,
+        " (", round(n_miss_upd  / n_total_w * 100, 2), "%)")
+
+# Quick summary table
+weight_check <- tibble(
+  Variable        = c("CMAB01a1 (original, kg)",
+                      "CMAB01a2 (original, lbs)",
+                      "updated_CMAB01a1 (merged, kg)"),
+  N_Missing       = c(sum(is.na(weight_raw$CMAB01a1)),
+                      sum(is.na(weight_raw$CMAB01a2)),
+                      n_miss_upd),
+  N_Total         = n_total_w,
+  Missing_Rate_pct = round(c(sum(is.na(weight_raw$CMAB01a1)),
+                              sum(is.na(weight_raw$CMAB01a2)),
+                              n_miss_upd) / n_total_w * 100, 2)
+)
+
+kable(weight_check,
+      col.names = c("Variable", "N Missing", "N Total", "Missing Rate (%)"),
+      caption   = "Weight variable missing rate before and after combining kg + lbs")
+
+# --- Step 2: Merge updated_CMAB01a1 into blue_df ---
+# Replace the original CMAB01a1 with updated_CMAB01a1, keep PublicID for joining
+blue_df <- blue_df %>%
+  left_join(weight_raw %>% select(PublicID, updated_CMAB01a1), by = "PublicID") %>%
+  select(-CMAB01a1)   # remove original weight column
+
+# --- Step 3: Compute BMI ---
+# BMI = weight(kg) / height(m)^2
+# V1BA02a is height in cm -> convert to metres
+blue_df <- blue_df %>%
+  mutate(
+    V1BA02a = as.numeric(V1BA02a),
+    BMI = round(updated_CMAB01a1 / (V1BA02a / 100)^2, 2)
+  ) %>%
+  select(-updated_CMAB01a1, -V1BA02a)   # drop the two source columns
+
+message("BMI computed. N missing BMI: ", sum(is.na(blue_df$BMI)),
+        " / ", nrow(blue_df),
+        " (", round(sum(is.na(blue_df$BMI)) / nrow(blue_df) * 100, 2), "%)")
+message("blue_df now: ", nrow(blue_df), " rows x ", ncol(blue_df), " cols")
+```
+
+```{r missing-rate-updated}
+# ============================================================
+# Step 5c: Recompute missing rate after weight/BMI update
+#          (updated variable list: CMAB01a1 & V1BA02a removed,
+#           BMI added)
+# ============================================================
+
+# Build the updated variable list
+blue_vars_updated <- c(
+  setdiff(blue_vars_only, c("CMAB01a1", "V1BA02a")),
+  "BMI"
+)
+
+n_rows_upd <- nrow(blue_df)
+
+missing_rate_updated_df <- tibble(variable = blue_vars_updated) %>%
+  mutate(
+    n_missing    = sapply(variable, function(v) {
+      if (v %in% names(blue_df)) sum(is.na(blue_df[[v]])) else NA_integer_
+    }),
+    n_total      = n_rows_upd,
+    missing_rate = round(n_missing / n_total * 100, 2)
+  ) %>%
+  left_join(lookup_df %>% select(variable, Variable_Type, Variable_Code),
+            by = "variable") %>%
+  mutate(
+    # BMI is not in codebook lookup — fill manually
+    Variable_Type = if_else(variable == "BMI" & is.na(Variable_Type),
+                            "Numeric", Variable_Type),
+    Variable_Code = if_else(variable == "BMI" & is.na(Variable_Code),
+                            "NA_or_blank", Variable_Code)
+  ) %>%
+  arrange(desc(missing_rate))
+
+n_vars_updated <- length(blue_vars_updated)
+
+kable(
+  missing_rate_updated_df,
+  col.names = c("Variable", "N Missing", "N Total", "Missing Rate (%)",
+                "Variable Type", "Variable Code"),
+  caption   = paste0("Missing rate for each of the ", n_vars_updated,
+                     " variables (after combining weight columns and computing BMI)")
+)
+```
+
+```{r merge-variables}
+# ============================================================
+# Step 5d: Merge groups of variables into single indicators
+# ============================================================
+
+# Helper: any_flag() — returns 1 if any column equals 1,
+#                       NA if all columns are NA (so downstream NA recoding applies),
+#                       0 otherwise
+any_flag <- function(df, cols) {
+  present_cols <- intersect(cols, names(df))
+  if (length(present_cols) == 0) return(rep(NA_real_, nrow(df)))
+  mat <- df %>% select(all_of(present_cols)) %>%
+    mutate(across(everything(), as.numeric))
+  apply(mat, 1, function(x) {
+    if (any(!is.na(x) & x == 1)) 1
+    else if (all(is.na(x)))      NA_real_
+    else                         0
+  })
+}
+
+# --- 1. Ins: any of the 5 insurance variables = 1 ---
+blue_df <- blue_df %>%
+  mutate(Ins = any_flag(., c("Ins_Govt","Ins_Mil","Ins_Comm","Ins_Pers","Ins_Othr"))) %>%
+  select(-Ins_Govt, -Ins_Mil, -Ins_Comm, -Ins_Pers, -Ins_Othr)
+
+# --- 2. Diabetes: VXXB01ae_FA or VXXB01ae1_FA = 1 ---
+blue_df <- blue_df %>%
+  mutate(Diabetes = any_flag(., c("VXXB01ae_FA","VXXB01ae1_FA"))) %>%
+  select(-VXXB01ae_FA, -VXXB01ae1_FA)
+
+# --- 3. Sleep_Apnea: V1AD14 or V3FF01a = 1 ---
+blue_df <- blue_df %>%
+  mutate(Sleep_Apnea = any_flag(., c("V1AD14","V3FF01a"))) %>%
+  select(-V1AD14, -V3FF01a)
+
+# --- 4. Cardiac_Disease: any of VXXB01ah/ai/aj/ak_FA = 1 ---
+blue_df <- blue_df %>%
+  mutate(Cardiac_Disease = any_flag(., c("VXXB01ah_FA","VXXB01ai_FA",
+                                          "VXXB01aj_FA","VXXB01ak_FA"))) %>%
+  select(-VXXB01ah_FA, -VXXB01ai_FA, -VXXB01aj_FA, -VXXB01ak_FA)
+
+# --- 5. Autoimmune_Disease: any of VXXB01au/av/aw_FA = 1 ---
+blue_df <- blue_df %>%
+  mutate(Autoimmune_Disease = any_flag(., c("VXXB01au_FA","VXXB01av_FA","VXXB01aw_FA"))) %>%
+  select(-VXXB01au_FA, -VXXB01av_FA, -VXXB01aw_FA)
+
+# --- 6. Thyroid_Disorder: VXXB01af_FA or VXXB01ag_FA = 1 ---
+blue_df <- blue_df %>%
+  mutate(Thyroid_Disorder = any_flag(., c("VXXB01af_FA","VXXB01ag_FA"))) %>%
+  select(-VXXB01af_FA, -VXXB01ag_FA)
+
+# --- 7. Prior_Uterine_Surgery: any of V1AD12a/b/c/d = 1 ---
+blue_df <- blue_df %>%
+  mutate(Prior_Uterine_Surgery = any_flag(., c("V1AD12a","V1AD12b","V1AD12c","V1AD12d"))) %>%
+  select(-V1AD12a, -V1AD12b, -V1AD12c, -V1AD12d)
+
+# --- 8. Bleeding_Disorder: VXXB01as_FA or VXXB01at_FA = 1 ---
+blue_df <- blue_df %>%
+  mutate(Bleeding_Disorder = any_flag(., c("VXXB01as_FA","VXXB01at_FA"))) %>%
+  select(-VXXB01as_FA, -VXXB01at_FA)
+
+# --- 9. Tobacco_Use: V3AF02 or V3AF05 = 1 ---
+blue_df <- blue_df %>%
+  mutate(Tobacco_Use = any_flag(., c("V3AF02","V3AF05"))) %>%
+  select(-V3AF02, -V3AF05)
+
+# --- 10. Alcohol_Use: V1AG02 or V1AG03 = 1 ---
+blue_df <- blue_df %>%
+  mutate(Alcohol_Use = any_flag(., c("V1AG02","V1AG03"))) %>%
+  select(-V1AG02, -V1AG03)
+
+# --- 11. Drug_Use: any of V3AF07a-i = 1 ---
+blue_df <- blue_df %>%
+  mutate(Drug_Use = any_flag(., c("V3AF07a","V3AF07b","V3AF07c","V3AF07d",
+                                   "V3AF07e","V3AF07f","V3AF07g","V3AF07h","V3AF07i"))) %>%
+  select(-V3AF07a, -V3AF07b, -V3AF07c, -V3AF07d,
+         -V3AF07e, -V3AF07f, -V3AF07g, -V3AF07h, -V3AF07i)
+
+# ============================================================
+# Step 5d-2: Recode values by variable type
+#
+# Yes_No_v1 variables: 1 = Yes, 2 = No -> recode 2 to 0, NA stays NA
+# Checked variables:   NA -> 0  (1 = checked/present, 0 = not present / missing)
+# ============================================================
+
+yes_no_vars <- c("Ins", "Sleep_Apnea", "Prior_Uterine_Surgery",
+                 "Tobacco_Use", "Alcohol_Use", "Drug_Use",
+                 "CMDA04a", "CMDA04b", "CMBG01",
+                 "ChronHTN")
+
+checked_vars <- c("Diabetes", "Cardiac_Disease", "Autoimmune_Disease",
+                  "Thyroid_Disorder", "Bleeding_Disorder",
+                  "VXXB01ab_FA", "VXXB01al_FA", "VXXB01ac_FA",
+                  "VXXB01ap_FA", "VXXB01ar_FA", "A09A03b3")
+
+# --- Record Ins missing rate BEFORE recoding ---
+ins_n_missing_before <- sum(is.na(blue_df$Ins))
+ins_n_total          <- nrow(blue_df)
+ins_miss_rate_before <- round(ins_n_missing_before / ins_n_total * 100, 2)
+
+# Yes_No_v1: recode 2 -> 0 and NA -> 0  (1 = Yes, 0 = No/Missing)
+for (v in yes_no_vars) {
+  if (v %in% names(blue_df)) {
+    blue_df[[v]] <- as.numeric(blue_df[[v]])
+    blue_df[[v]][is.na(blue_df[[v]]) | blue_df[[v]] == 2] <- 0
+  }
+}
+
+# Checked: NA -> 0
+for (v in checked_vars) {
+  if (v %in% names(blue_df)) {
+    blue_df[[v]] <- as.numeric(blue_df[[v]])
+    blue_df[[v]][is.na(blue_df[[v]])] <- 0
+  }
+}
+
+message("After merging and NA recoding: blue_df now has ",
+        nrow(blue_df), " rows x ", ncol(blue_df), " cols")
+message("Variables remaining (excl. PublicID): ",
+        paste(setdiff(names(blue_df), "PublicID"), collapse = ", "))
+```
+
+```{r missing-rate-final}
+# ============================================================
+# Step 5e: Missing rate table for the final 35 variables
+# ============================================================
+
+final_vars <- setdiff(names(blue_df), "PublicID")
+n_final    <- length(final_vars)
+n_rows_fin <- nrow(blue_df)
+
+# Manually define type/code for the 11 newly derived variables
+derived_meta <- tibble(
+  variable      = c("Ins", "Diabetes", "Sleep_Apnea", "Cardiac_Disease",
+                    "Autoimmune_Disease", "Thyroid_Disorder", "Prior_Uterine_Surgery",
+                    "Bleeding_Disorder", "Tobacco_Use", "Alcohol_Use", "Drug_Use"),
+  Variable_Type = "Coded",
+  Variable_Code = "0/1 (derived)"
+)
+
+# Combine codebook lookup with derived metadata
+lookup_final <- lookup_df %>%
+  select(variable, Variable_Type, Variable_Code) %>%
+  bind_rows(derived_meta) %>%
+  # BMI from earlier step
+  bind_rows(tibble(variable = "BMI",
+                   Variable_Type = "Numeric",
+                   Variable_Code = "NA_or_blank")) %>%
+  distinct(variable, .keep_all = TRUE)
+
+missing_rate_final_df <- tibble(variable = final_vars) %>%
+  mutate(
+    n_missing    = sapply(variable, function(v) {
+      if (v %in% names(blue_df)) sum(is.na(blue_df[[v]])) else NA_integer_
+    }),
+    n_total      = n_rows_fin,
+    missing_rate = round(n_missing / n_total * 100, 2)
+  ) %>%
+  left_join(lookup_final, by = "variable") %>%
+  mutate(
+    Variable_Type = if_else(is.na(Variable_Type), "Not found in codebook", Variable_Type),
+    Variable_Code = if_else(is.na(Variable_Code), "NA_or_blank", Variable_Code)
+  ) %>%
+  arrange(desc(missing_rate))
+
+kable(
+  missing_rate_final_df,
+  col.names = c("Variable", "N Missing", "N Total", "Missing Rate (%)",
+                "Variable Type", "Variable Code"),
+  caption   = paste0("Missing rate for each of the ", n_final,
+                     " final variables (after all merging steps)")
+)
+
+# --- Ins: missing rate before vs after recoding ---
+ins_n_missing_after <- sum(is.na(blue_df$Ins))
+ins_comparison <- tibble(
+  Stage         = c("After merging (before recode)",
+                    "After recode (2 -> 0, NA stays NA)"),
+  N_Missing     = c(ins_n_missing_before, ins_n_missing_after),
+  N_Total       = ins_n_total,
+  Missing_Rate  = c(ins_miss_rate_before,
+                    round(ins_n_missing_after / ins_n_total * 100, 2))
+)
+
+kable(
+  ins_comparison,
+  col.names = c("Stage", "N Missing", "N Total", "Missing Rate (%)"),
+  caption   = "Ins: missing rate before and after recoding 2 -> 0 (NA unchanged)"
+)
+```
+
+```{r value-distribution}
+# ============================================================
+# Step 5f: Unique value distribution for all final variables
+#          (proportion of each unique value per variable)
+# ============================================================
+
+library(ggplot2)
+
+final_vars_plot <- setdiff(names(blue_df), "PublicID")
+n_total_plot    <- nrow(blue_df)
+
+# Build a long-form summary: for each variable, count each unique value
+dist_df <- purrr::map_dfr(final_vars_plot, function(v) {
+  x <- blue_df[[v]]
+  tbl <- table(x, useNA = "always")
+  tibble(
+    variable  = v,
+    value     = names(tbl),
+    n         = as.integer(tbl),
+    pct       = round(as.integer(tbl) / n_total_plot * 100, 1)
+  ) %>%
+    mutate(value = if_else(is.na(value) | value == "NA", "NA", as.character(value)))
+})
+
+# Plot: one facet per variable, bars = unique values, y = percentage
+n_vars_plot <- length(final_vars_plot)
+
+ggplot(dist_df, aes(x = value, y = pct, fill = value)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = paste0(pct, "%")),
+            vjust = -0.4, size = 2.5, fontface = "bold") +
+  facet_wrap(~ variable, scales = "free_x",
+             ncol = 5) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.15))) +
+  labs(
+    title = paste0("Value distribution for each of the ", n_vars_plot, " final variables"),
+    x     = "Value",
+    y     = "Percentage (%)"
+  ) +
+  theme_bw() +
+  theme(
+    legend.position  = "none",
+    strip.text       = element_text(size = 7, face = "bold"),
+    axis.text.x      = element_text(size = 7),
+    axis.text.y      = element_text(size = 7),
+    plot.title       = element_text(size = 11, face = "bold"),
+    panel.spacing    = unit(0.4, "lines")
+  )
+```
+
+```{r check-non-numeric}
+# ============================================================
+# Step 5g: Check which final variables are not numeric
+# ============================================================
+
+final_vars_check <- setdiff(names(blue_df), "PublicID")
+n_total_check    <- nrow(blue_df)
+
+# Directly check variable type using is.numeric()
+non_numeric_vars <- Filter(function(v) !is.numeric(blue_df[[v]]), final_vars_check)
+
+if (length(non_numeric_vars) == 0) {
+  message("All final variables are numeric.")
+} else {
+  message("Non-numeric variables found: ", paste(non_numeric_vars, collapse = ", "))
+
+  # For each non-numeric variable, show only non-numeric unique values and their proportions
+  non_numeric_summary <- purrr::map_dfr(non_numeric_vars, function(v) {
+    x <- blue_df[[v]]
+    tbl <- table(as.character(x), useNA = "always")
+    tibble(
+      Variable       = v,
+      Unique_Value   = names(tbl),
+      N              = as.integer(tbl),
+      Proportion_pct = round(as.integer(tbl) / n_total_check * 100, 2)
+    ) %>%
+      mutate(Unique_Value = if_else(is.na(Unique_Value) | Unique_Value == "NA",
+                                    "NA", Unique_Value)) %>%
+      # Keep only values that cannot be converted to numeric (excluding NA)
+      filter(Unique_Value == "NA" | is.na(suppressWarnings(as.numeric(Unique_Value)))) %>%
+      arrange(desc(N))
+  })
+
+  kable(
+    non_numeric_summary,
+    col.names = c("Variable", "Unique Value", "N", "Proportion (%)"),
+    caption   = paste0("Unique values and proportions for ",
+                       length(non_numeric_vars),
+                       " non-numeric variable(s) in the final dataset")
+  )
+}
+```
+
+```{r recode-non-numeric-to-na}
+# ============================================================
+# Step 5h: Replace all non-numeric values (e.g. "D", "R") with NA
+#          across all final variables, so Python KNN imputer
+#          can handle them directly as NaN
+# ============================================================
+
+final_vars_recode <- setdiff(names(blue_df), "PublicID")
+
+blue_df <- blue_df %>%
+  mutate(across(
+    all_of(final_vars_recode),
+    ~ {
+      x_num <- suppressWarnings(as.numeric(as.character(.x)))
+      # Where original is not NA but conversion failed -> set to NA
+      ifelse(!is.na(.x) & is.na(x_num), NA_real_, x_num)
+    }
+  ))
+
+# Verify: re-run non-numeric check to confirm all clean
+remaining_non_numeric <- Filter(function(v) !is.numeric(blue_df[[v]]), final_vars_recode)
+
+if (length(remaining_non_numeric) == 0) {
+  message("All variables are now numeric. Non-numeric values successfully replaced with NA.")
+} else {
+  message("WARNING: still non-numeric variables remaining: ",
+          paste(remaining_non_numeric, collapse = ", "))
+}
+
+message("blue_df now: ", nrow(blue_df), " rows x ", ncol(blue_df), " cols")
+```
+
+```{r check-non-numeric-after-recode}
+# ============================================================
+# Step 5h-2: Re-check non-numeric variables after recoding
+#            (same as Step 5g, to verify the fix worked)
+# ============================================================
+
+final_vars_check2 <- setdiff(names(blue_df), "PublicID")
+n_total_check2    <- nrow(blue_df)
+
+non_numeric_vars2 <- Filter(function(v) !is.numeric(blue_df[[v]]), final_vars_check2)
+
+if (length(non_numeric_vars2) == 0) {
+  message("All final variables are numeric. No non-numeric values remaining.")
+} else {
+  message("Non-numeric variables still found: ", paste(non_numeric_vars2, collapse = ", "))
+
+  non_numeric_summary2 <- purrr::map_dfr(non_numeric_vars2, function(v) {
+    x <- blue_df[[v]]
+    tbl <- table(as.character(x), useNA = "always")
+    tibble(
+      Variable       = v,
+      Unique_Value   = names(tbl),
+      N              = as.integer(tbl),
+      Proportion_pct = round(as.integer(tbl) / n_total_check2 * 100, 2)
+    ) %>%
+      mutate(Unique_Value = if_else(is.na(Unique_Value) | Unique_Value == "NA",
+                                    "NA", Unique_Value)) %>%
+      filter(Unique_Value == "NA" | is.na(suppressWarnings(as.numeric(Unique_Value)))) %>%
+      arrange(desc(N))
+  })
+
+  kable(
+    non_numeric_summary2,
+    col.names = c("Variable", "Unique Value", "N", "Proportion (%)"),
+    caption   = paste0("Remaining non-numeric unique values after recoding (",
+                       length(non_numeric_vars2), " variable(s))")
+  )
+}
+```
+
+```{r one-hot-encoding}
+# ============================================================
+# Step 5i: One-hot encoding for non-ordinal categorical variables
+#          with more than 3 categories:
+#          - Race       (1-9, Race/Ethnicity)
+#          - V1AF04     (1-5 + R, Marital Status; R already recoded to NA)
+# ============================================================
+
+# Helper: one_hot() — takes a df, a column name, and a prefix,
+#                     returns the df with the original column replaced
+#                     by dummy columns (drop first to avoid multicollinearity)
+one_hot <- function(df, col, prefix) {
+  x <- as.integer(df[[col]])
+  levels_present <- sort(unique(x[!is.na(x)]))
+  # Drop first level to avoid perfect multicollinearity
+  levels_to_encode <- levels_present[-1]
+  for (lv in levels_to_encode) {
+    new_col <- paste0(prefix, "_", lv)
+    df[[new_col]] <- if_else(is.na(x), NA_real_,
+                             if_else(x == lv, 1, 0))
+  }
+  df[[col]] <- NULL  # remove original column
+  df
+}
+
+# ============================================================
+# Step 5i-a: Race value distribution BEFORE one-hot encoding
+# ============================================================
+
+race_codebook <- c(
+  "1" = "Non-Hispanic White (reference, will be dropped)",
+  "2" = "Non-Hispanic Black",
+  "3" = "Hispanic",
+  "4" = "American Indian",
+  "5" = "Asian",
+  "6" = "Native Hawaiian",
+  "7" = "Other",
+  "8" = "Multiracial",
+  "9" = "Missing"
+)
+
+race_before <- table(blue_df[["Race"]], useNA = "always")
+race_before_df <- tibble(
+  Race_value = names(race_before),
+  N          = as.integer(race_before),
+  Pct        = round(as.integer(race_before) / nrow(blue_df) * 100, 2),
+  Category   = dplyr::recode(names(race_before),
+                              !!!race_codebook,
+                              .missing = "NA / Missing")
+) %>%
+  arrange(suppressWarnings(as.numeric(Race_value)))
+
+message("--------------------------------------------------")
+message("Race value distribution BEFORE one-hot encoding:")
+message("--------------------------------------------------")
+kable(
+  race_before_df,
+  col.names = c("Race value", "N", "% of total", "Category (nuMoM2b codebook)"),
+  caption   = "Race: unique value counts BEFORE one-hot encoding (reference = 1, Non-Hispanic White)"
+)
+
+# --- Race: reference category = 1 (Non-Hispanic White) ---
+blue_df <- one_hot(blue_df, "Race", "Race")
+
+# --- V1AF04 (Marital Status): reference category = 1 (Single, never married) ---
+blue_df <- one_hot(blue_df, "V1AF04", "Marital")
+
+message("After one-hot encoding: blue_df now has ",
+        nrow(blue_df), " rows x ", ncol(blue_df), " cols")
+message("New dummy columns added: ",
+        paste(grep("^Race_|^Marital_", names(blue_df), value = TRUE),
+              collapse = ", "))
+
+# ============================================================
+# Step 5i-b: Race dummy column distribution AFTER one-hot encoding
+# Shows: for each Race_N column, how many rows are 1, 0, and NA
+# ============================================================
+
+race_dummy_cols <- sort(grep("^Race_", names(blue_df), value = TRUE))
+
+race_after_codebook <- c(
+  "Race_2" = "Non-Hispanic Black",
+  "Race_3" = "Hispanic",
+  "Race_4" = "American Indian",
+  "Race_5" = "Asian",
+  "Race_6" = "Native Hawaiian",
+  "Race_7" = "Other",
+  "Race_8" = "Multiracial",
+  "Race_9" = "Missing"
+)
+
+n_total_after <- nrow(blue_df)
+
+race_after_df <- purrr::map_dfr(race_dummy_cols, function(col) {
+  x <- blue_df[[col]]
+  n_one  <- sum(x == 1,  na.rm = TRUE)
+  n_zero <- sum(x == 0,  na.rm = TRUE)
+  n_na   <- sum(is.na(x))
+  tibble(
+    Column   = col,
+    Category = race_after_codebook[col],
+    `N (=1)` = n_one,
+    `% (=1)` = round(n_one  / n_total_after * 100, 2),
+    `N (=0)` = n_zero,
+    `% (=0)` = round(n_zero / n_total_after * 100, 2),
+    `N (NA)` = n_na,
+    `% (NA)` = round(n_na   / n_total_after * 100, 2)
+  )
+})
+
+message("--------------------------------------------------")
+message("Race dummy column distribution AFTER one-hot encoding:")
+message("--------------------------------------------------")
+kable(
+  race_after_df,
+  caption = "Race: dummy column value distribution AFTER one-hot encoding"
+)
+```
+
+```{r save}
+# ============================================================
+# Step 6: Save outputs
+# ============================================================
+
+library(writexl)
+
+write_csv(blue_df,                  file.path(out_dir, "v1_1_blue_variables.csv"))
+saveRDS(blue_df,                    file.path(out_dir, "v1_1_blue_variables.rds"))
+write_csv(lookup_df,                file.path(out_dir, "v1_2_blue_codebook_lookup.csv"))
+write_csv(missing_rate_df,          file.path(out_dir, "v1_3_blue_missing_rate.csv"))
+write_csv(missing_rate_updated_df,  file.path(out_dir, "v1_4_blue_missing_rate_updated.csv"))
+write_csv(missing_rate_final_df,    file.path(out_dir, "v1_5_blue_missing_rate_final.csv"))
+
+# Export the 35 final variables as Excel
+write_xlsx(blue_df,                 file.path(out_dir, "v1_6_blue_variables_35_final.xlsx"))
+
+message("Saved: v1_1_blue_variables.csv              — ", nrow(blue_df), " rows x ", ncol(blue_df), " cols")
+message("Saved: v1_2_blue_codebook_lookup.csv        — codebook info for ", nrow(lookup_df), " variables")
+message("Saved: v1_3_blue_missing_rate.csv           — original missing rates (63 vars)")
+message("Saved: v1_4_blue_missing_rate_updated.csv   — after BMI derivation (61 vars)")
+message("Saved: v1_5_blue_missing_rate_final.csv     — final missing rates (", length(final_vars), " vars)")
+message("Saved: v1_6_blue_variables_35_final.xlsx    — ", nrow(blue_df), " rows x ", ncol(blue_df), " cols (Excel)")
+```

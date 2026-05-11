@@ -1,0 +1,206 @@
+---
+title: "Table 1: Descriptive Statistics"
+author: "Conglin Bao"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries}
+library(readr)
+library(dplyr)
+library(gtsummary)
+library(flextable)
+library(here)
+
+here::i_am("scripts/s5_table1_descriptive.Rmd")
+```
+
+```{r load-data}
+df <- read_csv(here("outputs", "s3", "v2_1_blue_with_SMM.csv"),
+               show_col_types = FALSE)
+
+message("Loaded: ", nrow(df), " rows x ", ncol(df), " cols")
+```
+
+```{r prepare-variables}
+df_table <- df %>%
+  mutate(
+
+    # ── Outcome ──────────────────────────────────────────────────────
+    SMM = factor(SMM, levels = c(0, 1), labels = c("No SMM", "SMM")),
+
+    # ── ORDINAL variables ─────────────────────────────────────────────
+
+    AgeCat_V1 = factor(AgeCat_V1,
+                       levels  = 1:4,
+                       labels  = c("13-17", "18-34", "35-39", ">=40"),
+                       ordered = TRUE),
+
+    Education = factor(Education,
+                       levels  = 1:6,
+                       labels  = c("Less than HS", "HS grad/GED",
+                                   "Some college", "Assoc/Tech degree",
+                                   "Completed college", "Beyond college"),
+                       ordered = TRUE),
+
+    V1AF10 = factor(V1AF10,
+                    levels  = 1:4,
+                    labels  = c("Very well", "Well", "Not well", "Not at all"),
+                    ordered = TRUE),
+
+    GravCat = factor(GravCat,
+                     levels  = 1:3,
+                     labels  = c("1", "2", ">=3"),
+                     ordered = TRUE),
+
+    # ── NON-ORDINAL >3 categories: reconstruct from one-hot for display ──
+
+    Race = case_when(
+      Race_2 == 1 ~ "Hispanic or Latino",
+      Race_3 == 1 ~ "Non-Hispanic Black",
+      Race_4 == 1 ~ "Non-Hispanic Asian",
+      Race_5 == 1 ~ "Non-Hispanic AIAN",
+      Race_6 == 1 ~ "Non-Hispanic NHOPI",
+      Race_7 == 1 ~ "Non-Hispanic Mixed",
+      Race_8 == 1 ~ "Non-Hispanic Other",
+      Race_9 == 1 ~ "Unknown/Not reported",
+      TRUE        ~ "Non-Hispanic White"
+    ) %>% factor(),
+
+    Marital_Status = case_when(
+      Marital_2 == 1 ~ "Divorced",
+      Marital_3 == 1 ~ "Separated",
+      Marital_4 == 1 ~ "Widowed",
+      Marital_5 == 1 ~ "Never married",
+      TRUE           ~ "Married/Living with partner"
+    ) %>% factor(),
+
+    # ── BINARY (0/1) variables ────────────────────────────────────────
+    # All already 0/1 after s1/s3 processing (missing = No applied)
+
+    Ins                   = factor(Ins,       levels = c(0,1), labels = c("No","Yes")),
+    ChronHTN              = factor(ChronHTN,  levels = c(0,1), labels = c("No","Yes")),
+    Diabetes              = factor(Diabetes,  levels = c(0,1), labels = c("No","Yes")),
+    VXXB01ab_FA           = factor(VXXB01ab_FA,  levels = c(0,1), labels = c("No","Yes")),
+    Sleep_Apnea           = factor(Sleep_Apnea,  levels = c(0,1), labels = c("No","Yes")),
+    VXXB01al_FA           = factor(VXXB01al_FA,  levels = c(0,1), labels = c("No","Yes")),
+    Cardiac_Disease       = factor(Cardiac_Disease,    levels = c(0,1), labels = c("No","Yes")),
+    Autoimmune_Disease    = factor(Autoimmune_Disease,  levels = c(0,1), labels = c("No","Yes")),
+    VXXB01ac_FA           = factor(VXXB01ac_FA,  levels = c(0,1), labels = c("No","Yes")),
+    Thyroid_Disorder      = factor(Thyroid_Disorder,   levels = c(0,1), labels = c("No","Yes")),
+    Prior_Uterine_Surgery = factor(Prior_Uterine_Surgery, levels = c(0,1), labels = c("No","Yes")),
+    VXXB01ap_FA           = factor(VXXB01ap_FA,  levels = c(0,1), labels = c("No","Yes")),
+    Bleeding_Disorder     = factor(Bleeding_Disorder,  levels = c(0,1), labels = c("No","Yes")),
+    VXXB01ar_FA           = factor(VXXB01ar_FA,  levels = c(0,1), labels = c("No","Yes")),
+    CMDA04a               = factor(CMDA04a,  levels = c(0,1), labels = c("No","Yes")),
+    CMDA04b               = factor(CMDA04b,  levels = c(0,1), labels = c("No","Yes")),
+    CMBG01                = factor(CMBG01,   levels = c(0,1), labels = c("No","Yes")),
+    A09A03b3              = factor(A09A03b3, levels = c(0,1), labels = c("No","Yes")),
+    Tobacco_Use           = factor(Tobacco_Use,  levels = c(0,1), labels = c("No","Yes")),
+    Alcohol_Use           = factor(Alcohol_Use,  levels = c(0,1), labels = c("No","Yes")),
+    Drug_Use              = factor(Drug_Use,     levels = c(0,1), labels = c("No","Yes"))
+  )
+```
+
+```{r table1}
+# Variables in display order, grouped by domain
+table1_vars <- c(
+  # Sociodemographic / SDoH
+  "AgeCat_V1", "Education", "Race", "Marital_Status",
+  "V1AF10", "V1AF09", "GravCat", "Ins",
+
+  # Baseline Medical History
+  "ChronHTN", "Diabetes", "VXXB01ab_FA", "Sleep_Apnea",
+  "VXXB01al_FA", "Cardiac_Disease", "Autoimmune_Disease",
+  "VXXB01ac_FA", "Thyroid_Disorder", "Prior_Uterine_Surgery",
+  "VXXB01ap_FA", "Bleeding_Disorder", "VXXB01ar_FA",
+
+  # Late Pregnancy Clinical Status
+  "BMI", "CMAC03_wks",
+  "V3BA02a1", "V3BA02b1",
+  "CMAH01b4", "CMAH01b6", "CMAH01b1",
+  "CMDA04a", "CMDA04b", "CMBG01", "A09A03b3",
+
+  # Behavioral
+  "Tobacco_Use", "Alcohol_Use", "Drug_Use"
+)
+
+# Display labels matching expert codebook
+var_labels <- list(
+  AgeCat_V1      ~ "Maternal age category (years)",
+  Education      ~ "Education status",
+  Race           ~ "Race/Ethnicity",
+  Marital_Status ~ "Marital status",
+  V1AF10         ~ "English proficiency",
+  V1AF09         ~ "Years lived in U.S.",
+  GravCat        ~ "Gravidity",
+  Ins            ~ "Any insurance",
+  ChronHTN              ~ "Chronic hypertension",
+  Diabetes              ~ "Diabetes",
+  VXXB01ab_FA           ~ "Asthma",
+  Sleep_Apnea           ~ "Sleep apnea / CPAP use",
+  VXXB01al_FA           ~ "Renal disease",
+  Cardiac_Disease       ~ "Cardiac disease",
+  Autoimmune_Disease    ~ "Autoimmune disease",
+  VXXB01ac_FA           ~ "Seizure disorder",
+  Thyroid_Disorder      ~ "Thyroid disorder",
+  Prior_Uterine_Surgery ~ "Prior uterine surgery",
+  VXXB01ap_FA           ~ "Thrombocytopenia history",
+  Bleeding_Disorder     ~ "Bleeding disorder",
+  VXXB01ar_FA           ~ "History of blood clots / stroke",
+  BMI        ~ "BMI (kg/m\u00b2)",
+  CMAC03_wks ~ "Gestational age at delivery (weeks)",
+  V3BA02a1   ~ "Last prenatal systolic BP (mmHg)",
+  V3BA02b1   ~ "Last prenatal diastolic BP (mmHg)",
+  CMAH01b4   ~ "Hematocrit (%)",
+  CMAH01b6   ~ "Platelet count (\u00d710\u00b3/\u00b5L)",
+  CMAH01b1   ~ "WBC count (\u00d710\u00b3/\u00b5L)",
+  CMDA04a    ~ "New-onset hypertensive disorder (\u226520 wks)",
+  CMDA04b    ~ "New-onset isolated proteinuria (\u226520 wks)",
+  CMBG01     ~ "Cerclage placed",
+  A09A03b3   ~ "Suspected preeclampsia / HELLP / eclampsia",
+  Tobacco_Use ~ "Tobacco use",
+  Alcohol_Use ~ "Alcohol use",
+  Drug_Use    ~ "Drug use"
+)
+
+# Overall Table 1 (no stratification)
+table1 <- df_table %>%
+  select(all_of(table1_vars)) %>%
+  tbl_summary(
+    label     = var_labels,
+    missing   = "ifany",
+    statistic = list(
+      all_continuous()  ~ "{mean} ({sd})",
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    digits = list(
+      all_continuous()  ~ 2,
+      all_categorical() ~ c(0, 1)
+    )
+  ) %>%
+  bold_labels() %>%
+  modify_caption("**Table 1. Descriptive Statistics of Study Sample**") %>%
+  modify_footnote(
+    all_stat_cols() ~
+      "Continuous: Mean (SD); Categorical: n (%); Missing reported if present"
+  )
+
+table1
+```
+
+```{r export}
+dir.create(here("outputs", "s5"), recursive = TRUE, showWarnings = FALSE)
+
+out_path <- here("outputs", "s5", "Table1_descriptive_statistics.docx")
+
+table1 %>%
+  as_flex_table() %>%
+  flextable::save_as_docx(path = out_path)
+
+message("Saved: ", out_path)
+```

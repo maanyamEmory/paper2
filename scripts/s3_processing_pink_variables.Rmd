@@ -1,0 +1,586 @@
+---
+title: "S3 - Processing Pink Variables and Creating SMM Column"
+output: html_document
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(readxl)
+library(stringr)
+library(purrr)
+library(here)
+library(knitr)
+
+here::i_am('scripts/s3_processing_pink_variables.Rmd')
+
+pink_path     <- here("outputs/s2/v1_2_pink_variables_clean.csv")
+codebook_path <- here("data/general/HIGHLIGHTED_nuMoM2b_Merged_Dataset_Codebook_9.14.25.xlsx")
+merged_path   <- here("data/general/nuMoM2b_Merged_Dataset.csv")
+blue_path     <- here("outputs/s1/v1_6_blue_variables_35_final.xlsx")
+out_dir       <- here("outputs/s3")
+dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+```
+
+```{r step1-remove-variables}
+# ============================================================
+# Step 1: Read pink dataset and remove specified variables
+# ============================================================
+
+pink <- read_csv(pink_path, show_col_types = FALSE)
+
+message("Rows loaded: ", nrow(pink))
+message("Cols loaded (incl. PublicID): ", ncol(pink))
+
+# Variables to remove
+vars_smm_na <- c(
+  "CMAE11e_SP", "CMAE12c", "CMAE13c1", "CMAE13c2",
+  "CMAE13c3", "CMAE13c4", "CMAE13c4_SP", "CMAI01A_INT"
+)
+
+vars_smm_rf <- c(
+  "CMBJ04", "CMBJ04_1", "CMBJ04_2", "CMBJ04_3", "CMBJ04_4",
+  "CMDA08c", "CMEA03"
+)
+
+vars_remove_other <- c("A04A05")
+
+all_vars_to_remove <- c(vars_smm_na, vars_smm_rf, vars_remove_other)
+
+actually_removed <- intersect(all_vars_to_remove, names(pink))
+not_found        <- setdiff(all_vars_to_remove, names(pink))
+
+message("--------------------------------------------------")
+message("NOTE: Variables to remove (SMM = NA):         ", length(vars_smm_na))
+message("NOTE: Variables to remove (SMM = RF):         ", length(vars_smm_rf))
+message("NOTE: Variables to remove (other):            ", length(vars_remove_other))
+message("NOTE: Total variables to remove:              ", length(all_vars_to_remove))
+message("NOTE: Actually found and removed:             ", length(actually_removed))
+if (length(not_found) > 0) {
+  message("WARNING: Not found in dataset: ", paste(not_found, collapse = ", "))
+}
+message("--------------------------------------------------")
+
+pink_reduced <- pink %>%
+  select(-any_of(all_vars_to_remove))
+
+remaining_vars <- setdiff(names(pink_reduced), "PublicID")
+
+message("Cols before removal (excl. PublicID): ", ncol(pink) - 1)
+message("Cols after removal  (excl. PublicID): ", length(remaining_vars))
+message("Rows unchanged: ", nrow(pink_reduced))
+```
+
+```{r step2-codebook-lookup}
+# ============================================================
+# Step 2: Look up Variable_Code_List_if_Coded for each
+#         remaining pink variable
+# ============================================================
+
+cb <- read_excel(codebook_path, sheet = "nuMoM2b_Variables")
+
+cb_var_col  <- names(cb)[tolower(names(cb)) == "variable_name"][1]
+cb_code_col <- names(cb)[tolower(names(cb)) == "variable_code_list_if_coded"][1]
+
+if (is.na(cb_var_col))  stop("Cannot find Variable_Name column in codebook.")
+if (is.na(cb_code_col)) stop("Cannot find Variable_Code_List_if_Coded column in codebook.")
+
+cb_small <- cb %>%
+  transmute(
+    variable                    = as.character(.data[[cb_var_col]]),
+    Variable_Code_List_if_Coded = as.character(.data[[cb_code_col]])
+  )
+
+lookup <- tibble(variable = remaining_vars) %>%
+  left_join(cb_small, by = "variable") %>%
+  mutate(
+    code_value = case_when(
+      is.na(Variable_Code_List_if_Coded) |
+        trimws(Variable_Code_List_if_Coded) == "" ~ "NA_or_blank",
+      TRUE ~ trimws(Variable_Code_List_if_Coded)
+    )
+  )
+
+code_summary <- lookup %>%
+  count(code_value, name = "n_variables") %>%
+  arrange(desc(n_variables))
+
+message("--------------------------------------------------")
+message("NOTE: Variable_Code_List_if_Coded summary for remaining ",
+        length(remaining_vars), " pink variables:")
+message("--------------------------------------------------")
+for (i in seq_len(nrow(code_summary))) {
+  message(sprintf("  %-35s : %d variable(s)",
+                  code_summary$code_value[i], code_summary$n_variables[i]))
+}
+
+na_blank_vars <- lookup %>% filter(code_value == "NA_or_blank") %>% pull(variable)
+message("--------------------------------------------------")
+message("NOTE: NA_or_blank variables (", length(na_blank_vars), " total):")
+for (v in na_blank_vars) message("  ", v)
+message("--------------------------------------------------")
+
+write_csv(lookup,       file.path(out_dir, "v1_1_pink_remaining_code_lookup.csv"))
+write_csv(code_summary, file.path(out_dir, "v1_2_code_value_summary.csv"))
+message("Saved: outputs/s3/v1_1_pink_remaining_code_lookup.csv")
+message("Saved: outputs/s3/v1_2_code_value_summary.csv")
+```
+
+```{r step3-remove-sp-vars}
+# ============================================================
+# Step 3: Remove A04A03c_SP and A04A03c_SP_1
+# ============================================================
+
+vars_step3_remove <- c("A04A03c_SP", "A04A03c_SP_1")
+
+actually_step3 <- intersect(vars_step3_remove, names(pink_reduced))
+message("--------------------------------------------------")
+message("NOTE: Step 3 — removing: ", paste(actually_step3, collapse = ", "))
+message("NOTE: Cols before step 3 (excl. PublicID): ", length(remaining_vars))
+
+pink_step3 <- pink_reduced %>%
+  select(-any_of(vars_step3_remove))
+
+remaining_vars2 <- setdiff(names(pink_step3), "PublicID")
+message("NOTE: Cols after  step 3 (excl. PublicID): ", length(remaining_vars2))
+message("--------------------------------------------------")
+
+lookup2 <- lookup %>% filter(!variable %in% vars_step3_remove)
+```
+
+```{r step4-smm-dict-matching}
+# ============================================================
+# Step 4: SMM from free-text SP variables
+#
+# Each SP variable has its own approved exact-value list.
+# A row is flagged only when its text exactly matches
+# (case-insensitive) one of the approved values for that variable.
+#
+# Variables and their approved trigger values:
+#
+# CMAE15a_sp:
+#   pulmonary edema, Intubation post-operation,
+#   MILD PULMONARY EDEMA, Pulmonary edema,
+#   Respiratory distress, acute renal failure,
+#   aspiration pneumonia,
+#   disseminated intravascular coagulation,
+#   respiratory failure
+#
+# CMAE15b_sp:
+#   Acute Respiratory Distress, SEPTIC SHOCK
+#
+# CMAE15c_sp:
+#   HYSTERECTOMY
+#
+# CMAE15d_sp:
+#   (none — no value triggers SMM=1)
+#
+# CMAJ01d5_SP:
+#   cardiodyopathy, cardiomyopathy
+#
+# All other NA_or_blank SP variables (CMAD01h_SP, CMAD01i_SP,
+# CMAJ01d1_SP, A04A05_1) retain the original smm_dict
+# keyword-matching approach.
+# ============================================================
+
+# --- 4a) Exact-value lists per SP variable -------------------
+
+sp_exact <- list(
+  CMAE15a_sp = c(
+    "pulmonary edema",
+    "intubation post-operation",
+    "mild pulmonary edema",
+    "respiratory distress",
+    "acute renal failure",
+    "aspiration pneumonia",
+    "disseminated intravascular coagulation",
+    "respiratory failure"
+  ),
+  CMAE15b_sp = c(
+    "acute respiratory distress",
+    "septic shock"
+  ),
+  CMAE15c_sp = c(
+    "hysterectomy"
+  ),
+  CMAE15d_sp  = character(0),   # no approved values
+  CMAJ01d5_SP = c(
+    "cardiodyopathy",            # preserve original misspelling from data
+    "cardiomyopathy"
+  )
+)
+
+# Helper: exact match (case-insensitive, after trimming whitespace)
+exact_match_smm <- function(x, approved_vals) {
+  if (length(approved_vals) == 0) return(rep(FALSE, length(x)))
+  x_lower <- str_to_lower(str_trim(as.character(x)))
+  x_lower[is.na(x)] <- ""
+  x_lower %in% str_to_lower(approved_vals)
+}
+
+# Build trigger flags for exact-match SP variables
+sp_exact_vars_present <- intersect(names(sp_exact), names(pink_step3))
+sp_exact_vars_missing <- setdiff(names(sp_exact), names(pink_step3))
+
+message("--------------------------------------------------")
+message("NOTE: Step 4a — exact-match SP variables (", length(sp_exact_vars_present), " present):")
+for (v in sp_exact_vars_present) {
+  n_approved <- length(sp_exact[[v]])
+  message(sprintf("  %-20s : %d approved value(s)", v, n_approved))
+}
+if (length(sp_exact_vars_missing) > 0)
+  message("WARNING: not found in dataset: ",
+          paste(sp_exact_vars_missing, collapse = ", "))
+message("--------------------------------------------------")
+
+trigger_exact <- map_dfc(sp_exact_vars_present, function(v) {
+  tibble(!!v := exact_match_smm(pink_step3[[v]], sp_exact[[v]]))
+})
+
+smm_from_exact <- as.integer(
+  if (ncol(trigger_exact) > 0) rowSums(trigger_exact, na.rm = TRUE) > 0
+  else rep(FALSE, nrow(pink_step3))
+)
+
+message("NOTE: Rows triggered SMM=1 by exact SP matching: ", sum(smm_from_exact))
+
+# --- 4b) smm_dict keyword matching for remaining SP variables ----
+
+smm_dict <- list(
+  smm_core = c(
+    "severe maternal morbidity", "maternal morbidity", "smm"
+  ),
+  transfusion_hemorrhage = c(
+    "transfusion", "massive transfusion", "blood products",
+    "pph", "postpartum hemorrhage", "hemorrhage", "haemorrhage",
+    "atony", "uterine atony", "d&c", "dilation and curettage",
+    "hysterectomy", "peripartum hysterectomy"
+  ),
+  hypertensive = c(
+    "preeclampsia", "eclampsia", "hellp",
+    "severe features", "magnesium sulfate", "magnesium",
+    "hypertensive emergency"
+  ),
+  infection_sepsis = c(
+    "sepsis", "septic", "bacteremia", "endometritis",
+    "chorioamnionitis", "infection", "shock", "anaphylaxis", "analphylactic"
+  ),
+  thromboembolic = c(
+    "embolism", "pulmonary embolism", "pe", "emboli",
+    "dvt", "deep vein thrombosis",
+    "thrombosis", "air embolus", "air embolism"
+  ),
+  amniotic_fluid_embolism = c("amniotic fluid embolism"),
+  sickle_cell = c(
+    "sickle cell", "Hb SS", "Hb-SS", "Hb-C", "thalassemia"
+  ),
+  disseminated_intravascular_coagulation = c(
+    "disseminated intravascular coagulation", "coagulation"
+  ),
+  respiratory = c(
+    "respiratory failure", "ventilation", "intubation",
+    "ards", "oxygen", "hypoxia", "pulmonary edema", "pulmonary insufficiency"
+  ),
+  cardiac = c(
+    "cardiac arrest", "arrest", "myocardial infarction", "ventricular failure",
+    "heart failure", "cardiomyopathy", "arrhythmia", "heart block", "cor pulmonale"
+  ),
+  puerperal_cerebrovascular_disorders = c(
+    "puerperal cerebrovascular disorders", "encephalopathy", "cerebral ischemic",
+    "retinal artery", "subarachnoid hemorrhage", "cerebral infarction",
+    "cerebrovascular disease"
+  ),
+  neuro = c(
+    "stroke", "cva", "seizure", "intracranial", "coma"
+  ),
+  renal_hepatic = c(
+    "renal failure", "dialysis", "acute kidney injury", "aki",
+    "liver failure", "hepatic failure"
+  ),
+  aneurysm = c(
+    "aneurysm", "aorta", "aortic", "aortic dissection",
+    "liver failure", "hepatic failure"
+  ),
+  hysterectomy = c(
+    "hysterectomy", "resection of uterus", "uterus resection", "uterus removal",
+    "removal of uterus", "hepatic failure"
+  ),
+  tracheostomy = c(
+    "tracheostomy", "trach", "trachea", "windpipe"
+  ),
+  anesthesia_related = c(
+    "high spinal", "local anesthetic toxicity", "last", "ventilation",
+    "dural puncture", "total spinal", "failure to intubate",
+    "failure to ventilate", "hemodynamic collapse", "hemodynamic instability",
+    "anesthesia related", "due to anesthesia", "malignant hyperthermia",
+    "aspirate", "aspiration"
+  )
+)
+
+smm_keywords <- unique(str_trim(str_to_lower(unlist(smm_dict, use.names = FALSE))))
+smm_keywords  <- smm_keywords[smm_keywords != ""]
+
+has_keyword <- function(x, keywords) {
+  x_lower <- str_to_lower(str_trim(as.character(x)))
+  x_lower[is.na(x_lower)] <- ""
+  map_lgl(x_lower, ~ any(str_detect(.x, fixed(keywords, ignore_case = TRUE))))
+}
+
+# SP variables handled by dict keyword matching (not exact-match)
+vars_dict_match <- c("CMAD01h_SP", "CMAD01i_SP", "CMAJ01d1_SP", "A04A05_1")
+
+vars_dict_present <- intersect(vars_dict_match, names(pink_step3))
+vars_dict_missing <- setdiff(vars_dict_match, names(pink_step3))
+
+message("--------------------------------------------------")
+message("NOTE: Step 4b — smm_dict matching variables (", length(vars_dict_present), " present):")
+for (v in vars_dict_present) message("  ", v)
+if (length(vars_dict_missing) > 0)
+  message("WARNING: not found in dataset: ", paste(vars_dict_missing, collapse = ", "))
+message("--------------------------------------------------")
+
+trigger_dict <- map_dfc(vars_dict_present, function(v) {
+  tibble(!!v := has_keyword(pink_step3[[v]], smm_keywords))
+})
+
+smm_from_dict <- as.integer(
+  if (ncol(trigger_dict) > 0) rowSums(trigger_dict, na.rm = TRUE) > 0
+  else rep(FALSE, nrow(pink_step3))
+)
+
+message("NOTE: Rows triggered SMM=1 by smm_dict keyword matching: ", sum(smm_from_dict))
+
+# Combined text SMM flag (exact OR dict)
+smm_from_text <- as.integer(smm_from_exact == 1 | smm_from_dict == 1)
+message("NOTE: Rows triggered SMM=1 by any text method: ", sum(smm_from_text))
+```
+
+```{r step5-coded-variables}
+# ============================================================
+# Step 5: SMM from coded variables
+#         Event_Related        : value 1 or 2 => SMM=1
+#         Adverse_Event_v1,
+#         Checked, Yes_No_v1,
+#         Yes_No_v4, Yes_No_v5 : value 1      => SMM=1
+# ============================================================
+
+handled_vars <- c(
+  names(sp_exact),        # exact-match SP vars
+  vars_dict_present,      # dict-match SP vars
+  vars_step3_remove,
+  all_vars_to_remove
+)
+
+lookup_coded <- lookup2 %>%
+  filter(!variable %in% handled_vars)
+
+vars_event_related <- lookup_coded %>%
+  filter(code_value == "Event_Related") %>% pull(variable)
+
+vars_value1 <- lookup_coded %>%
+  filter(code_value %in% c(
+    "Adverse_Event_v1", "Checked", "Yes_No_v1", "Yes_No_v4", "Yes_No_v5"
+  )) %>% pull(variable)
+
+message("--------------------------------------------------")
+message("NOTE: Step 5 — Event_Related variables (value 1 or 2 => SMM=1): ",
+        length(vars_event_related))
+for (v in vars_event_related) message("  ", v)
+message("NOTE: Step 5 — value=1 variables (Adverse_Event/Checked/Yes_No): ",
+        length(vars_value1))
+message("--------------------------------------------------")
+
+is_value <- function(x, vals) {
+  x_num <- suppressWarnings(as.numeric(str_trim(as.character(x))))
+  !is.na(x_num) & x_num %in% vals
+}
+
+trigger_er <- map_dfc(
+  intersect(vars_event_related, names(pink_step3)),
+  function(v) tibble(!!v := is_value(pink_step3[[v]], c(1, 2)))
+)
+
+trigger_v1 <- map_dfc(
+  intersect(vars_value1, names(pink_step3)),
+  function(v) tibble(!!v := is_value(pink_step3[[v]], 1))
+)
+
+smm_from_er <- as.integer(
+  if (ncol(trigger_er) > 0) rowSums(trigger_er, na.rm = TRUE) > 0
+  else rep(FALSE, nrow(pink_step3))
+)
+
+smm_from_v1 <- as.integer(
+  if (ncol(trigger_v1) > 0) rowSums(trigger_v1, na.rm = TRUE) > 0
+  else rep(FALSE, nrow(pink_step3))
+)
+
+message("NOTE: Rows triggered SMM=1 by Event_Related (1 or 2): ", sum(smm_from_er))
+message("NOTE: Rows triggered SMM=1 by value=1 coded vars:     ", sum(smm_from_v1))
+```
+
+```{r create-smm-column}
+# ============================================================
+# Final: Combine all SMM triggers -> SMM column
+# ============================================================
+
+smm_numeric <- as.integer(smm_from_er == 1 | smm_from_v1 == 1)
+smm_final   <- as.integer(smm_numeric  == 1 | smm_from_text == 1)
+
+pink_with_smm <- pink_step3 %>%
+  mutate(SMM = smm_final)
+
+n_smm1  <- sum(pink_with_smm$SMM == 1, na.rm = TRUE)
+n_total <- nrow(pink_with_smm)
+rate    <- round(n_smm1 / n_total * 100, 2)
+
+message("==================================================")
+message("FINAL SMM SUMMARY")
+message("==================================================")
+message("NOTE: Total rows:       ", n_total)
+message("NOTE: SMM = 1:          ", n_smm1)
+message("NOTE: SMM = 0:          ", n_total - n_smm1)
+message("NOTE: SMM = 1 rate:     ", rate, "%")
+message("==================================================")
+```
+
+```{r smm-attribution-table}
+# ============================================================
+# SMM Attribution Summary Table
+# How was each SMM=1 individual identified?
+#   - numeric only  : coded variables fired, text did not
+#   - text only     : text matching fired, coded did not
+#   - both          : both methods fired
+# ============================================================
+
+flag_numeric <- smm_numeric == 1
+flag_text    <- smm_from_text == 1
+
+n_numeric_only <- sum( flag_numeric & !flag_text)
+n_text_only    <- sum(!flag_numeric &  flag_text)
+n_both         <- sum( flag_numeric &  flag_text)
+n_total_smm1   <- sum( flag_numeric |  flag_text)
+
+attribution_df <- tibble(
+  `SMM Definition Method`     = c(
+    "Numeric (coded variables) only",
+    "Text matching (SP fields) only",
+    "Both numeric AND text",
+    "Total SMM = 1"
+  ),
+  `N individuals` = c(
+    n_numeric_only,
+    n_text_only,
+    n_both,
+    n_total_smm1
+  ),
+  `% of total cohort` = round(
+    c(n_numeric_only, n_text_only, n_both, n_total_smm1) / n_total * 100, 2
+  ),
+  `% of SMM=1` = round(
+    c(n_numeric_only, n_text_only, n_both, n_total_smm1) / n_total_smm1 * 100, 2
+  )
+)
+
+kable(attribution_df, caption = "SMM = 1 Attribution Summary")
+```
+
+```{r save-outputs}
+# ============================================================
+# Save outputs
+#
+# Dataset 1: blue variables + SMM
+# Dataset 2: Dataset 1 + additional CMAC15 columns from
+#            nuMoM2b_Merged_Dataset.csv
+# ============================================================
+
+# --- Load blue variables (35 final variables from s1) ---
+blue <- readxl::read_xlsx(blue_path)
+message("Blue variables loaded: ", nrow(blue), " rows x ", ncol(blue), " cols")
+
+# --- Build Dataset 1: blue + SMM ---
+smm_key <- pink_with_smm %>% select(PublicID, SMM)
+
+dataset1 <- blue %>%
+  left_join(smm_key, by = "PublicID")
+
+message("Dataset 1 shape: ", nrow(dataset1), " rows x ", ncol(dataset1), " cols")
+
+# --- Load merged dataset for extra CMAC15 columns ---
+extra_cols <- c(
+  "PublicID",
+  "CMAC15b",
+  "CMAC15a1Pri", "CMAC15a1Sec",
+  "CMAC15a2Pri", "CMAC15a2Sec",
+  "CMAC15a3Pri", "CMAC15a3Sec",
+  "CMAC15a4Pri", "CMAC15a4Sec",
+  "CMAC15a5Pri", "CMAC15a5Sec",
+  "CMAC15a7Pri", "CMAC15a7Sec",
+  "CMAC15a8Pri", "CMAC15a8Sec",
+  "CMAC15a8a",
+  "CMAC15a11Pri", "CMAC15a11Sec"
+)
+
+merged_raw <- read_csv(merged_path, show_col_types = FALSE)
+
+extra_cols_present <- intersect(extra_cols, names(merged_raw))
+extra_cols_missing <- setdiff(extra_cols, names(merged_raw))
+
+if (length(extra_cols_missing) > 0)
+  message("WARNING: extra cols not found in merged dataset: ",
+          paste(extra_cols_missing, collapse = ", "))
+
+merged_extra <- merged_raw %>%
+  select(all_of(extra_cols_present))
+
+# --- Build Dataset 2: Dataset 1 + CMAC15 columns ---
+dataset2 <- dataset1 %>%
+  left_join(merged_extra, by = "PublicID")
+
+message("Dataset 2 shape: ", nrow(dataset2), " rows x ", ncol(dataset2), " cols")
+
+# --- Save ---
+write_csv(dataset1, file.path(out_dir, "v2_1_blue_with_SMM.csv"))
+write_csv(dataset2, file.path(out_dir, "v2_2_blue_with_SMM_extended.csv"))
+
+# Also save the intermediate pink+SMM files (unchanged from v1)
+smm_output <- pink_with_smm %>% select(PublicID, SMM)
+write_csv(pink_with_smm, file.path(out_dir, "v1_3_pink_with_SMM.csv"))
+saveRDS(pink_with_smm,   file.path(out_dir, "v1_3_pink_with_SMM.rds"))
+write_csv(smm_output,    file.path(out_dir, "v1_4_SMM_final.csv"))
+saveRDS(smm_output,      file.path(out_dir, "v1_4_SMM_final.rds"))
+
+message("Saved: outputs/s3/v1_5_blue_with_SMM.csv          (blue vars + SMM)")
+message("Saved: outputs/s3/v1_6_blue_with_SMM_extended.csv (blue vars + SMM + CMAC15)")
+message("Saved: outputs/s3/v1_3_pink_with_SMM.csv          (all pink vars + SMM)")
+message("Saved: outputs/s3/v1_4_SMM_final.csv              (PublicID + SMM only)")
+```
+
+```{r missing-rate-final-check}
+# ============================================================
+# Step 7: Missing rate for each variable in v2_1_blue_with_SMM.csv
+# ============================================================
+
+final_check_df <- read_csv(file.path(out_dir, "v2_1_blue_with_SMM.csv"),
+                           show_col_types = FALSE)
+
+check_vars <- setdiff(names(final_check_df), "PublicID")
+n_rows_chk <- nrow(final_check_df)
+
+missing_rate_check <- tibble(variable = check_vars) %>%
+  mutate(
+    n_missing    = sapply(variable, function(v) sum(is.na(final_check_df[[v]]))),
+    n_total      = n_rows_chk,
+    missing_rate = round(n_missing / n_total * 100, 2)
+  ) %>%
+  arrange(desc(missing_rate))
+
+n_vars_chk <- length(check_vars)
+
+kable(
+  missing_rate_check,
+  col.names = c("Variable", "N Missing", "N Total", "Missing Rate (%)"),
+  caption   = paste0("Missing rate for each of the ", n_vars_chk,
+                     " variables in v2_1_blue_with_SMM.csv")
+)
+```
